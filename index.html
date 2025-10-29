@@ -49,8 +49,29 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
   (function(){
-    // Make sure DOM exists before wiring anything
-    if (!document.getElementById('map')) return;
+    // Prevent double-initialization if the script is included twice or navigated via PJAX
+    if (window.__PLUME_INITED__) return; 
+    window.__PLUME_INITED__ = true;
+
+    // ====== Early declarations used by functions ======
+    const R = 6371000; 
+    const toDeg = 180/Math.PI;
+    let running = false;
+    let maxTrail = 8;
+    let maxParticles = 4000;
+    let maxLifesec = 18;
+    let spawnPerSec = 300; // particles per second
+    let spawnAccumulator = 0;
+    let sourceRadiusM = 300;
+
+    // Wind: manual or from API
+    let manual = true;
+    let manualSpeed = 5.0; // m/s
+    let manualDir = 270;   // deg FROM which the wind blows
+    let wind = { u: 0, v: 0, speed: 0, dir: 0 };
+
+    // Particles array must exist before draw()/resizeCanvas might run
+    const particles = [];
 
     // ====== Map setup ======
     const map = L.map('map', { preferCanvas: true }).setView([53.5461, -113.4938], 9);
@@ -63,7 +84,6 @@
     let sourceCenter = L.latLng(53.5461, -113.4938);
     const sourceMarker = L.marker(sourceCenter, { draggable: true }).addTo(map)
       .bindTooltip('Source centre', {permanent:true, direction:'top', offset:[0,-18]});
-    let sourceRadiusM = 300;
     const sourceCircle = L.circle(sourceCenter, { radius: sourceRadiusM, color: '#2b6cb0', weight: 1.5, fillOpacity: 0.05 }).addTo(map);
 
     // Click to set source
@@ -84,12 +104,36 @@
     overlayPane.appendChild(canvas);
     const ctx = canvas.getContext('2d');
 
+    function draw(){
+      const size = map.getSize();
+      ctx.clearRect(0,0,size.x,size.y);
+      ctx.lineWidth = 1;
+      for (let p of particles){
+        if (p.trail && p.trail.length>1){
+          ctx.beginPath();
+          const pt0 = map.latLngToLayerPoint(p.trail[0]);
+          ctx.moveTo(pt0.x, pt0.y);
+          for (let i=1;i<p.trail.length;i++){
+            const pti = map.latLngToLayerPoint(p.trail[i]);
+            ctx.lineTo(pti.x, pti.y);
+          }
+          ctx.strokeStyle = 'rgba(80,80,80,0.35)';
+          ctx.stroke();
+        }
+        const pt = map.latLngToLayerPoint([p.lat, p.lon]);
+        ctx.beginPath(); ctx.arc(pt.x, pt.y, 1.6, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(30,30,30,0.85)';
+        ctx.fill();
+      }
+    }
+
     function resizeCanvas(){
       const size = map.getSize();
       canvas.width = size.x; canvas.height = size.y;
       const pos = map._getMapPanePos();
       L.DomUtil.setPosition(canvas, pos.multiplyBy(-1));
-      draw(); // keep in sync when resizing/panning
+      // draw only after initial seeding to avoid referencing undefined
+      if (particles.length) draw();
     }
     map.on('resize zoom move', resizeCanvas);
     resizeCanvas();
@@ -104,39 +148,8 @@
       }
     };
 
-    // ====== Params & state ======
-    const R = 6371000; const toDeg = 180/Math.PI;
-    let running = false;
-    let maxTrail = 8;
-    let maxParticles = 4000;
-    let maxLifesec = 18;
-    let spawnPerSec = 300; // particles per second
-    let spawnAccumulator = 0;
-
-    // Wind: manual or from API
-    let manual = true;
-    let manualSpeed = 5.0; // m/s
-    let manualDir = 270;   // deg FROM which the wind blows
-    let wind = { u: 0, v: 0, speed: 0, dir: 0 };
-
-    // ====== UI handles (now that DOM is ready) ======
+    // ====== Wind helpers ======
     const windStat = document.getElementById('windStat');
-    const fpsEl    = document.getElementById('fps');
-    const radiusEl = document.getElementById('radius');
-    const spawnEl  = document.getElementById('spawn');
-    const maxpEl   = document.getElementById('maxp');
-    const trailEl  = document.getElementById('trail');
-    const ageEl    = document.getElementById('maxAge');
-
-    const manualEl = document.getElementById('manualWind');
-    const wsEl     = document.getElementById('windSpeed');
-    const wdEl     = document.getElementById('windDir');
-    const windBtn  = document.getElementById('apiWind');
-
-    // Guard: if any of these are missing, bail with a console error
-    const uiEls = [windStat,fpsEl,radiusEl,spawnEl,maxpEl,trailEl,ageEl,manualEl,wsEl,wdEl,windBtn];
-    if (uiEls.some(x=>!x)) { console.error('UI elements missing'); }
-
     function updateManualWind(){
       const rad = manualDir*Math.PI/180;
       const u = -manualSpeed*Math.sin(rad);
@@ -165,9 +178,7 @@
       }
     }
 
-    // ====== Particles ======
-    const particles = [];
-
+    // ====== Emission & physics ======
     function jitterWithinRadiusMeters(centerLL, radiusM){
       const r = radiusM*Math.sqrt(Math.random());
       const th = Math.random()*Math.PI*2;
@@ -209,30 +220,8 @@
       }
     }
 
-    function draw(){
-      const size = map.getSize();
-      ctx.clearRect(0,0,size.x,size.y);
-      ctx.lineWidth = 1;
-      for (let p of particles){
-        if (p.trail.length>1){
-          ctx.beginPath();
-          const pt0 = map.latLngToLayerPoint(p.trail[0]);
-          ctx.moveTo(pt0.x, pt0.y);
-          for (let i=1;i<p.trail.length;i++){
-            const pti = map.latLngToLayerPoint(p.trail[i]);
-            ctx.lineTo(pti.x, pti.y);
-          }
-          ctx.strokeStyle = 'rgba(80,80,80,0.35)';
-          ctx.stroke();
-        }
-        const pt = map.latLngToLayerPoint([p.lat, p.lon]);
-        ctx.beginPath(); ctx.arc(pt.x, pt.y, 1.6, 0, Math.PI*2);
-        ctx.fillStyle = 'rgba(30,30,30,0.85)';
-        ctx.fill();
-      }
-    }
-
     // ====== Animation loop ======
+    const fpsEl = document.getElementById('fps');
     let last = performance.now();
     let frames = 0, fpsAccum = 0;
     function animate(){
@@ -253,14 +242,19 @@
     requestAnimationFrame(animate);
 
     // ====== UI wiring ======
-    document.getElementById('start').onclick = () => { running = true; last = performance.now(); draw(); };
+    document.getElementById('start').onclick = () => { running = true; last = performance.now(); };
     document.getElementById('stop').onclick  = () => { running = false; };
 
-    radiusEl.oninput = () => { sourceRadiusM = parseFloat(radiusEl.value); sourceCircle.setRadius(sourceRadiusM); };
-    spawnEl.oninput  = () => { spawnPerSec = parseFloat(spawnEl.value); };
-    maxpEl.oninput   = () => { maxParticles = parseInt(maxpEl.value,10); };
-    trailEl.oninput  = () => { maxTrail = parseInt(trailEl.value,10); };
-    ageEl.oninput    = () => { maxLifesec = parseInt(ageEl.value,10); };
+    document.getElementById('radius').oninput = (e) => { sourceRadiusM = parseFloat(e.target.value); sourceCircle.setRadius(sourceRadiusM); };
+    document.getElementById('spawn').oninput  = (e) => { spawnPerSec = parseFloat(e.target.value); };
+    document.getElementById('maxp').oninput   = (e) => { maxParticles = parseInt(e.target.value,10); };
+    document.getElementById('trail').oninput  = (e) => { maxTrail = parseInt(e.target.value,10); };
+    document.getElementById('maxAge').oninput = (e) => { maxLifesec = parseInt(e.target.value,10); };
+
+    const manualEl = document.getElementById('manualWind');
+    const wsEl = document.getElementById('windSpeed');
+    const wdEl = document.getElementById('windDir');
+    const windBtn = document.getElementById('apiWind');
 
     manualEl.onchange = () => { manual = manualEl.checked; if (manual) updateManualWind(); };
     wsEl.oninput = () => { manualSpeed = parseFloat(wsEl.value); if (manual) updateManualWind(); };
@@ -270,7 +264,7 @@
     // Seed a visible batch so "Start" immediately shows movement
     for (let i=0;i<600;i++){ const ll = jitterWithinRadiusMeters(sourceCenter, sourceRadiusM); particles.push({lat: ll.lat, lon: ll.lng, age: Math.random()*maxLifesec*0.6, trail: []}); }
 
-    // Initialize wind label from sliders
+    // Initialize wind label from sliders and do an initial draw
     updateManualWind();
     draw();
   })();
@@ -328,8 +322,29 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
   (function(){
-    // Make sure DOM exists before wiring anything
-    if (!document.getElementById('map')) return;
+    // Prevent double-initialization if the script is included twice or navigated via PJAX
+    if (window.__PLUME_INITED__) return; 
+    window.__PLUME_INITED__ = true;
+
+    // ====== Early declarations used by functions ======
+    const R = 6371000; 
+    const toDeg = 180/Math.PI;
+    let running = false;
+    let maxTrail = 8;
+    let maxParticles = 4000;
+    let maxLifesec = 18;
+    let spawnPerSec = 300; // particles per second
+    let spawnAccumulator = 0;
+    let sourceRadiusM = 300;
+
+    // Wind: manual or from API
+    let manual = true;
+    let manualSpeed = 5.0; // m/s
+    let manualDir = 270;   // deg FROM which the wind blows
+    let wind = { u: 0, v: 0, speed: 0, dir: 0 };
+
+    // Particles array must exist before draw()/resizeCanvas might run
+    const particles = [];
 
     // ====== Map setup ======
     const map = L.map('map', { preferCanvas: true }).setView([53.5461, -113.4938], 9);
@@ -342,7 +357,6 @@
     let sourceCenter = L.latLng(53.5461, -113.4938);
     const sourceMarker = L.marker(sourceCenter, { draggable: true }).addTo(map)
       .bindTooltip('Source centre', {permanent:true, direction:'top', offset:[0,-18]});
-    let sourceRadiusM = 300;
     const sourceCircle = L.circle(sourceCenter, { radius: sourceRadiusM, color: '#2b6cb0', weight: 1.5, fillOpacity: 0.05 }).addTo(map);
 
     // Click to set source
@@ -363,12 +377,36 @@
     overlayPane.appendChild(canvas);
     const ctx = canvas.getContext('2d');
 
+    function draw(){
+      const size = map.getSize();
+      ctx.clearRect(0,0,size.x,size.y);
+      ctx.lineWidth = 1;
+      for (let p of particles){
+        if (p.trail && p.trail.length>1){
+          ctx.beginPath();
+          const pt0 = map.latLngToLayerPoint(p.trail[0]);
+          ctx.moveTo(pt0.x, pt0.y);
+          for (let i=1;i<p.trail.length;i++){
+            const pti = map.latLngToLayerPoint(p.trail[i]);
+            ctx.lineTo(pti.x, pti.y);
+          }
+          ctx.strokeStyle = 'rgba(80,80,80,0.35)';
+          ctx.stroke();
+        }
+        const pt = map.latLngToLayerPoint([p.lat, p.lon]);
+        ctx.beginPath(); ctx.arc(pt.x, pt.y, 1.6, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(30,30,30,0.85)';
+        ctx.fill();
+      }
+    }
+
     function resizeCanvas(){
       const size = map.getSize();
       canvas.width = size.x; canvas.height = size.y;
       const pos = map._getMapPanePos();
       L.DomUtil.setPosition(canvas, pos.multiplyBy(-1));
-      draw(); // keep in sync when resizing/panning
+      // draw only after initial seeding to avoid referencing undefined
+      if (particles.length) draw();
     }
     map.on('resize zoom move', resizeCanvas);
     resizeCanvas();
@@ -383,39 +421,8 @@
       }
     };
 
-    // ====== Params & state ======
-    const R = 6371000; const toDeg = 180/Math.PI;
-    let running = false;
-    let maxTrail = 8;
-    let maxParticles = 4000;
-    let maxLifesec = 18;
-    let spawnPerSec = 300; // particles per second
-    let spawnAccumulator = 0;
-
-    // Wind: manual or from API
-    let manual = true;
-    let manualSpeed = 5.0; // m/s
-    let manualDir = 270;   // deg FROM which the wind blows
-    let wind = { u: 0, v: 0, speed: 0, dir: 0 };
-
-    // ====== UI handles (now that DOM is ready) ======
+    // ====== Wind helpers ======
     const windStat = document.getElementById('windStat');
-    const fpsEl    = document.getElementById('fps');
-    const radiusEl = document.getElementById('radius');
-    const spawnEl  = document.getElementById('spawn');
-    const maxpEl   = document.getElementById('maxp');
-    const trailEl  = document.getElementById('trail');
-    const ageEl    = document.getElementById('maxAge');
-
-    const manualEl = document.getElementById('manualWind');
-    const wsEl     = document.getElementById('windSpeed');
-    const wdEl     = document.getElementById('windDir');
-    const windBtn  = document.getElementById('apiWind');
-
-    // Guard: if any of these are missing, bail with a console error
-    const uiEls = [windStat,fpsEl,radiusEl,spawnEl,maxpEl,trailEl,ageEl,manualEl,wsEl,wdEl,windBtn];
-    if (uiEls.some(x=>!x)) { console.error('UI elements missing'); }
-
     function updateManualWind(){
       const rad = manualDir*Math.PI/180;
       const u = -manualSpeed*Math.sin(rad);
@@ -444,9 +451,7 @@
       }
     }
 
-    // ====== Particles ======
-    const particles = [];
-
+    // ====== Emission & physics ======
     function jitterWithinRadiusMeters(centerLL, radiusM){
       const r = radiusM*Math.sqrt(Math.random());
       const th = Math.random()*Math.PI*2;
@@ -488,30 +493,8 @@
       }
     }
 
-    function draw(){
-      const size = map.getSize();
-      ctx.clearRect(0,0,size.x,size.y);
-      ctx.lineWidth = 1;
-      for (let p of particles){
-        if (p.trail.length>1){
-          ctx.beginPath();
-          const pt0 = map.latLngToLayerPoint(p.trail[0]);
-          ctx.moveTo(pt0.x, pt0.y);
-          for (let i=1;i<p.trail.length;i++){
-            const pti = map.latLngToLayerPoint(p.trail[i]);
-            ctx.lineTo(pti.x, pti.y);
-          }
-          ctx.strokeStyle = 'rgba(80,80,80,0.35)';
-          ctx.stroke();
-        }
-        const pt = map.latLngToLayerPoint([p.lat, p.lon]);
-        ctx.beginPath(); ctx.arc(pt.x, pt.y, 1.6, 0, Math.PI*2);
-        ctx.fillStyle = 'rgba(30,30,30,0.85)';
-        ctx.fill();
-      }
-    }
-
     // ====== Animation loop ======
+    const fpsEl = document.getElementById('fps');
     let last = performance.now();
     let frames = 0, fpsAccum = 0;
     function animate(){
@@ -532,14 +515,19 @@
     requestAnimationFrame(animate);
 
     // ====== UI wiring ======
-    document.getElementById('start').onclick = () => { running = true; last = performance.now(); draw(); };
+    document.getElementById('start').onclick = () => { running = true; last = performance.now(); };
     document.getElementById('stop').onclick  = () => { running = false; };
 
-    radiusEl.oninput = () => { sourceRadiusM = parseFloat(radiusEl.value); sourceCircle.setRadius(sourceRadiusM); };
-    spawnEl.oninput  = () => { spawnPerSec = parseFloat(spawnEl.value); };
-    maxpEl.oninput   = () => { maxParticles = parseInt(maxpEl.value,10); };
-    trailEl.oninput  = () => { maxTrail = parseInt(trailEl.value,10); };
-    ageEl.oninput    = () => { maxLifesec = parseInt(ageEl.value,10); };
+    document.getElementById('radius').oninput = (e) => { sourceRadiusM = parseFloat(e.target.value); sourceCircle.setRadius(sourceRadiusM); };
+    document.getElementById('spawn').oninput  = (e) => { spawnPerSec = parseFloat(e.target.value); };
+    document.getElementById('maxp').oninput   = (e) => { maxParticles = parseInt(e.target.value,10); };
+    document.getElementById('trail').oninput  = (e) => { maxTrail = parseInt(e.target.value,10); };
+    document.getElementById('maxAge').oninput = (e) => { maxLifesec = parseInt(e.target.value,10); };
+
+    const manualEl = document.getElementById('manualWind');
+    const wsEl = document.getElementById('windSpeed');
+    const wdEl = document.getElementById('windDir');
+    const windBtn = document.getElementById('apiWind');
 
     manualEl.onchange = () => { manual = manualEl.checked; if (manual) updateManualWind(); };
     wsEl.oninput = () => { manualSpeed = parseFloat(wsEl.value); if (manual) updateManualWind(); };
@@ -549,7 +537,7 @@
     // Seed a visible batch so "Start" immediately shows movement
     for (let i=0;i<600;i++){ const ll = jitterWithinRadiusMeters(sourceCenter, sourceRadiusM); particles.push({lat: ll.lat, lon: ll.lng, age: Math.random()*maxLifesec*0.6, trail: []}); }
 
-    // Initialize wind label from sliders
+    // Initialize wind label from sliders and do an initial draw
     updateManualWind();
     draw();
   })();
