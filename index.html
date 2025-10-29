@@ -2,18 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Leaflet Particle Smoke — JS-only</title>
+  <title>Leaflet Particle Smoke — JS-only (Area Source + Manual Wind)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <style>
     html, body { height: 100%; margin: 0; }
     #map { width: 100%; height: 100%; }
-    .control-bar { position: absolute; top: 10px; left: 10px; z-index: 1000; background: rgba(255,255,255,0.9); padding: 8px 10px; border-radius: 8px; font-family: system-ui, Arial, sans-serif; font-size: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
-    .control-bar label { margin-right: 6px; }
-    .control-row { display: flex; gap: 8px; align-items: center; margin: 4px 0; flex-wrap: wrap; }
+    .control-bar { position: absolute; top: 10px; left: 10px; z-index: 1000; background: rgba(255,255,255,0.95); padding: 10px 12px; border-radius: 10px; font-family: system-ui, Arial, sans-serif; font-size: 14px; box-shadow: 0 2px 10px rgba(0,0,0,0.15); max-width: 540px; }
+    .control-row { display: flex; gap: 10px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+    .control-row label { white-space: nowrap; }
     .btn { border: 1px solid #ccc; padding: 4px 10px; border-radius: 6px; background: #f7f7f7; cursor: pointer; }
     .btn:active { transform: translateY(1px); }
     .stat { margin-left: 8px; opacity: 0.8; }
+    input[type=range] { width: 160px; }
   </style>
 </head>
 <body>
@@ -22,15 +23,27 @@
     <div class="control-row">
       <button id="start" class="btn">Start</button>
       <button id="stop" class="btn">Stop</button>
-      <label>Speed× <input id="speed" type="range" min="0.2" max="5" step="0.1" value="1"></label>
-      <label>Particles <input id="count" type="range" min="200" max="8000" step="200" value="2000"></label>
-    </div>
-    <div class="control-row">
-      <label>Tail (frames) <input id="trail" type="range" min="0" max="20" step="1" value="6"></label>
-      <label>API wind <input id="useApi" type="checkbox" checked></label>
-      <span class="stat" id="windStat">wind: —</span>
       <span class="stat" id="fps">fps: —</span>
     </div>
+    <div class="control-row">
+      <strong>Source</strong>
+      <label>Radius (m) <input id="radius" type="range" min="25" max="1500" step="25" value="300"></label>
+      <label>Spawn rate (p/s) <input id="spawn" type="range" min="10" max="2000" step="10" value="300"></label>
+      <label>Max particles <input id="maxp" type="range" min="200" max="15000" step="200" value="4000"></label>
+    </div>
+    <div class="control-row">
+      <strong>Wind</strong>
+      <label><input id="manualWind" type="checkbox" checked> Manual</label>
+      <label>Speed (m/s) <input id="windSpeed" type="range" min="0" max="30" step="0.1" value="5"></label>
+      <label>Direction (° from) <input id="windDir" type="range" min="0" max="360" step="1" value="270"></label>
+      <button id="apiWind" class="btn">Use API once</button>
+      <span class="stat" id="windStat">wind: 5.0 m/s from 270°</span>
+    </div>
+    <div class="control-row">
+      <label>Tail (frames) <input id="trail" type="range" min="0" max="30" step="1" value="8"></label>
+      <label>Fade (s) <input id="maxAge" type="range" min="4" max="60" step="1" value="18"></label>
+    </div>
+    <div class="control-row" style="opacity:0.8">Click map to set source centre. Drag the blue circle edge to adjust radius via slider. Toggle Manual to use sliders; otherwise press "Use API once" to fetch current wind near the source.</div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -42,11 +55,24 @@
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(map);
 
-  // Draggable source marker (emission origin)
-  const source = L.marker([53.5461, -113.4938], { draggable: true }).addTo(map)
-                 .bindTooltip('Emission source', {permanent:true, direction:'top', offset:[0,-18]});
+  // Source geometry: centre + radius circle
+  let sourceCenter = L.latLng(53.5461, -113.4938);
+  const sourceMarker = L.marker(sourceCenter, { draggable: true }).addTo(map)
+    .bindTooltip('Source centre', {permanent:true, direction:'top', offset:[0,-18]});
+  let sourceRadiusM = 300;
+  const sourceCircle = L.circle(sourceCenter, { radius: sourceRadiusM, color: '#2b6cb0', weight: 1.5, fillOpacity: 0.05 }).addTo(map);
 
-  // ====== Canvas overlay for particles ======
+  // Click to set source
+  map.on('click', (e) => setSource(e.latlng));
+  sourceMarker.on('move', (e)=> setSource(e.latlng));
+
+  function setSource(ll){
+    sourceCenter = L.latLng(ll.lat, ll.lng);
+    sourceMarker.setLatLng(sourceCenter);
+    sourceCircle.setLatLng(sourceCenter);
+  }
+
+  // ====== Canvas overlay ======
   const overlayPane = map.getPanes().overlayPane;
   const canvas = document.createElement('canvas');
   canvas.style.position = 'absolute';
@@ -63,7 +89,6 @@
   map.on('resize zoom move', resizeCanvas);
   resizeCanvas();
 
-  // Keep canvas aligned with map when it pans (leaflet moves the overlayPane)
   const originalSetPos = L.DomUtil.setPosition;
   L.DomUtil.setPosition = function(el, point) {
     originalSetPos(el, point);
@@ -73,83 +98,97 @@
     }
   };
 
-  // ====== Parameters ======
-  const R = 6371000; // m
-  const toDeg = 180/Math.PI;
-  let speedFactor = 1.0;           // user slider multiplier
-  let targetCount = 2000;          // user slider particle count
-  let maxTrail = 6;                // drawn tail length
+  // ====== Params & state ======
+  const R = 6371000; const toDeg = 180/Math.PI;
   let running = false;
+  let maxTrail = 8;
+  let maxParticles = 4000;
+  let maxLifesec = 18;
+  let spawnPerSec = 300; // particles per second
+  let spawnAccumulator = 0;
 
-  // ====== Wind field ======
-  // We maintain a simple, uniform wind from an API (Open-Meteo) near the source.
-  // You can replace this with a gridded field + bilinear interpolation for higher realism.
-  let wind = { u: 4.0, v: 0.5, speed: Math.hypot(4.0,0.5), dir: 270 }; // default westerly
+  // Wind: manual or from API
+  let manual = true;
+  let manualSpeed = 5.0; // m/s
+  let manualDir = 270;   // deg FROM which the wind blows
+  let wind = { u: -manualSpeed*Math.sin(manualDir*Math.PI/180), v: -manualSpeed*Math.cos(manualDir*Math.PI/180), speed: manualSpeed, dir: manualDir };
 
   async function refreshWindFromAPI(){
     try {
-      const ll = source.getLatLng();
+      const ll = sourceCenter;
       const url = `https://api.open-meteo.com/v1/forecast?latitude=${ll.lat.toFixed(4)}&longitude=${ll.lng.toFixed(4)}&hourly=wind_speed_10m,wind_direction_10m&forecast_days=1`;
       const r = await fetch(url);
       const j = await r.json();
-      const i = 0; // take the first hour for demo
-      const spd = j.hourly.wind_speed_10m[i]; // m/s
-      const dir = j.hourly.wind_direction_10m[i]; // deg FROM which the wind blows
-      const rad = dir * Math.PI/180;
-      // Convert met dir -> u (east), v (north). Meteorological is FROM dir.
-      const u = -spd * Math.sin(rad);
-      const v = -spd * Math.cos(rad);
+      const i = 0; // first hour
+      const spd = j.hourly.wind_speed_10m[i];
+      const dir = j.hourly.wind_direction_10m[i];
+      const rad = dir*Math.PI/180;
+      const u = -spd*Math.sin(rad);
+      const v = -spd*Math.cos(rad);
       wind = { u, v, speed: spd, dir };
-      windStat.textContent = `wind: ${spd.toFixed(1)} m/s from ${dir.toFixed(0)}°`;
-    } catch (e){
-      console.warn('Wind API failed, using default', e);
-      windStat.textContent = `wind: default ${wind.speed.toFixed(1)} m/s`;
+      windStat.textContent = `wind: ${spd.toFixed(1)} m/s from ${dir.toFixed(0)}° (API)`;
+    } catch (e) {
+      windStat.textContent = 'wind: API failed; keeping previous';
+      console.warn(e);
     }
+  }
+
+  function setManualWind(){
+    const rad = manualDir*Math.PI/180;
+    const u = -manualSpeed*Math.sin(rad);
+    const v = -manualSpeed*Math.cos(rad);
+    wind = { u, v, speed: manualSpeed, dir: manualDir };
+    windStat.textContent = `wind: ${manualSpeed.toFixed(1)} m/s from ${manualDir.toFixed(0)}° (manual)`;
   }
 
   // ====== Particles ======
   const particles = [];
-  const maxAge = 18; // seconds each particle lives (visual smoke feel)
 
-  function spawn(n){
-    const ll = source.getLatLng();
-    for (let i=0;i<n;i++){
-      // Small random offset near source (~300 m)
-      const r = 0.003 * Math.random();
-      const th = Math.random()*Math.PI*2;
-      const dlat = r * Math.sin(th);
-      const dlon = r * Math.cos(th);
-      particles.push({ lat: ll.lat + dlat, lon: ll.lng + dlon, age: 0, trail: [] });
+  function jitterWithinRadiusMeters(centerLL, radiusM){
+    // Uniform in disk
+    const r = radiusM*Math.sqrt(Math.random());
+    const th = Math.random()*Math.PI*2;
+    const dy = r*Math.sin(th); // meters north
+    const dx = r*Math.cos(th); // meters east
+    const dlat = (dy / R) * toDeg;
+    const dlon = (dx / (R*Math.max(1e-6, Math.cos(centerLL.lat*Math.PI/180)))) * toDeg;
+    return L.latLng(centerLL.lat + dlat, centerLL.lng + dlon);
+  }
+
+  function spawn(dt){
+    spawnAccumulator += spawnPerSec*dt;
+    let toMake = Math.floor(spawnAccumulator);
+    spawnAccumulator -= toMake;
+    // Respect maxParticles cap
+    toMake = Math.min(toMake, Math.max(0, maxParticles - particles.length));
+    for (let i=0;i<toMake;i++){
+      const ll = jitterWithinRadiusMeters(sourceCenter, sourceRadiusM);
+      particles.push({ lat: ll.lat, lon: ll.lng, age: 0, trail: [] });
     }
   }
 
-  function ensureParticleCount(){
-    if (particles.length < targetCount) spawn(targetCount - particles.length);
-    if (particles.length > targetCount) particles.splice(targetCount);
-  }
-
   function step(dt){
-    // Simple Euler advection with uniform wind
-    const u = wind.u * speedFactor; // m/s east
-    const v = wind.v * speedFactor; // m/s north
+    if (manual) setManualWind();
+    spawn(dt);
 
+    const u = wind.u; const v = wind.v; // m/s
     for (let p of particles){
-      // Save trail
-      if (maxTrail>0) {
+      // trail
+      if (maxTrail>0){
         p.trail.push([p.lat, p.lon]);
-        if (p.trail.length > maxTrail) p.trail.shift();
+        if (p.trail.length>maxTrail) p.trail.shift();
       }
-
-      const coslat = Math.cos(p.lat * Math.PI/180);
+      const coslat = Math.cos(p.lat*Math.PI/180);
       const dlat = (v / R) * toDeg * dt;
-      const dlon = (u / (R * Math.max(1e-6, coslat))) * toDeg * dt;
-      p.lat += dlat;
-      p.lon += dlon;
+      const dlon = (u / (R*Math.max(1e-6, coslat))) * toDeg * dt;
+      p.lat += dlat; p.lon += dlon;
       p.age += dt;
-
-      // Cull or respawn if too old or far out of view
-      if (p.age > maxAge) {
-        const ll = source.getLatLng();
+    }
+    // recycle old particles in place to avoid array churn
+    for (let i=0;i<particles.length;i++){
+      const p = particles[i];
+      if (p.age > maxLifesec){
+        const ll = jitterWithinRadiusMeters(sourceCenter, sourceRadiusM);
         p.lat = ll.lat; p.lon = ll.lng; p.age = 0; p.trail.length = 0;
       }
     }
@@ -157,17 +196,15 @@
 
   function draw(){
     const size = map.getSize();
-    ctx.clearRect(0,0, size.x, size.y);
+    ctx.clearRect(0,0,size.x,size.y);
 
-    // Slight fade for motion blur (optional):
-    // ctx.fillStyle = 'rgba(255,255,255,0.08)';
-    // ctx.fillRect(0,0, size.x, size.y);
+    // Optional fade field for smoky look:
+    // ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    // ctx.fillRect(0,0,size.x,size.y);
 
     ctx.lineWidth = 1;
-
     for (let p of particles){
-      // Draw trail first
-      if (p.trail.length > 1){
+      if (p.trail.length>1){
         ctx.beginPath();
         const pt0 = map.latLngToLayerPoint(p.trail[0]);
         ctx.moveTo(pt0.x, pt0.y);
@@ -178,12 +215,9 @@
         ctx.strokeStyle = 'rgba(80,80,80,0.35)';
         ctx.stroke();
       }
-
-      // Draw head
       const pt = map.latLngToLayerPoint([p.lat, p.lon]);
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 1.6, 0, Math.PI*2);
-      ctx.fillStyle = 'rgba(30,30,30,0.8)';
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, 1.6, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(30,30,30,0.85)';
       ctx.fill();
     }
   }
@@ -192,51 +226,341 @@
   let last = performance.now();
   let frames = 0, fpsAccum = 0;
   function animate(){
-    if (!running){ requestAnimationFrame(animate); return; }
     const now = performance.now();
-    const dt = Math.min(0.05, (now - last)/1000); // cap large jumps at 50 ms
+    const dt = Math.min(0.05, (now-last)/1000); // cap to 50 ms
     last = now;
-
-    ensureParticleCount();
-    step(dt);
-    draw();
-
-    // FPS stat
-    frames++; fpsAccum += dt;
-    if (fpsAccum >= 0.5){
-      fps.textContent = `fps: ${(frames/fpsAccum).toFixed(0)}`;
-      frames = 0; fpsAccum = 0;
+    if (running){
+      step(dt);
+      draw();
+      frames++; fpsAccum += dt;
+      if (fpsAccum>=0.5){
+        fps.textContent = `fps: ${(frames/fpsAccum).toFixed(0)}`;
+        frames=0; fpsAccum=0;
+      }
     }
     requestAnimationFrame(animate);
   }
+  requestAnimationFrame(animate);
 
   // ====== UI wiring ======
   const startBtn = document.getElementById('start');
   const stopBtn  = document.getElementById('stop');
-  const speedEl  = document.getElementById('speed');
-  const countEl  = document.getElementById('count');
-  const trailEl  = document.getElementById('trail');
-  const useApiEl = document.getElementById('useApi');
-  const windStat = document.getElementById('windStat');
   const fps      = document.getElementById('fps');
 
-  startBtn.onclick = async () => {
-    running = true;
-    last = performance.now();
-    if (useApiEl.checked) await refreshWindFromAPI();
+  const radiusEl = document.getElementById('radius');
+  const spawnEl  = document.getElementById('spawn');
+  const maxpEl   = document.getElementById('maxp');
+  const trailEl  = document.getElementById('trail');
+  const ageEl    = document.getElementById('maxAge');
+
+  const manualEl = document.getElementById('manualWind');
+  const wsEl     = document.getElementById('windSpeed');
+  const wdEl     = document.getElementById('windDir');
+  const windBtn  = document.getElementById('apiWind');
+  const windStat = document.getElementById('windStat');
+
+  startBtn.onclick = () => { running = true; last = performance.now(); };
+  stopBtn.onclick  = () => { running = false; };
+
+  radiusEl.oninput = () => { sourceRadiusM = parseFloat(radiusEl.value); sourceCircle.setRadius(sourceRadiusM); };
+  spawnEl.oninput  = () => { spawnPerSec = parseFloat(spawnEl.value); };
+  maxpEl.oninput   = () => { maxParticles = parseInt(maxpEl.value,10); };
+  trailEl.oninput  = () => { maxTrail = parseInt(trailEl.value,10); };
+  ageEl.oninput    = () => { maxLifesec = parseInt(ageEl.value,10); };
+
+  manualEl.onchange = () => { manual = manualEl.checked; if (manual) setManualWind(); };
+  wsEl.oninput = () => { manualSpeed = parseFloat(wsEl.value); if (manual) setManualWind(); };
+  wdEl.oninput = () => { manualDir = parseFloat(wdEl.value); if (manual) setManualWind(); };
+  windBtn.onclick = async () => { manual = false; manualEl.checked = false; await refreshWindFromAPI(); };
+
+  // Seed a few so you see something immediately when starting
+  (function seed(){ for (let i=0;i<100;i++){ const ll = jitterWithinRadiusMeters(sourceCenter, sourceRadiusM); particles.push({lat: ll.lat, lon: ll.lng, age: 0, trail: []}); } })();
+
+  // Initial wind label
+  setManualWind();
+  </script>
+</body>
+</html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Leaflet Particle Smoke — JS-only (Area Source + Manual Wind)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { width: 100%; height: 100%; }
+    .control-bar { position: absolute; top: 10px; left: 10px; z-index: 1000; background: rgba(255,255,255,0.95); padding: 10px 12px; border-radius: 10px; font-family: system-ui, Arial, sans-serif; font-size: 14px; box-shadow: 0 2px 10px rgba(0,0,0,0.15); max-width: 540px; }
+    .control-row { display: flex; gap: 10px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+    .control-row label { white-space: nowrap; }
+    .btn { border: 1px solid #ccc; padding: 4px 10px; border-radius: 6px; background: #f7f7f7; cursor: pointer; }
+    .btn:active { transform: translateY(1px); }
+    .stat { margin-left: 8px; opacity: 0.8; }
+    input[type=range] { width: 160px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="control-bar">
+    <div class="control-row">
+      <button id="start" class="btn">Start</button>
+      <button id="stop" class="btn">Stop</button>
+      <span class="stat" id="fps">fps: —</span>
+    </div>
+    <div class="control-row">
+      <strong>Source</strong>
+      <label>Radius (m) <input id="radius" type="range" min="25" max="1500" step="25" value="300"></label>
+      <label>Spawn rate (p/s) <input id="spawn" type="range" min="10" max="2000" step="10" value="300"></label>
+      <label>Max particles <input id="maxp" type="range" min="200" max="15000" step="200" value="4000"></label>
+    </div>
+    <div class="control-row">
+      <strong>Wind</strong>
+      <label><input id="manualWind" type="checkbox" checked> Manual</label>
+      <label>Speed (m/s) <input id="windSpeed" type="range" min="0" max="30" step="0.1" value="5"></label>
+      <label>Direction (° from) <input id="windDir" type="range" min="0" max="360" step="1" value="270"></label>
+      <button id="apiWind" class="btn">Use API once</button>
+      <span class="stat" id="windStat">wind: 5.0 m/s from 270°</span>
+    </div>
+    <div class="control-row">
+      <label>Tail (frames) <input id="trail" type="range" min="0" max="30" step="1" value="8"></label>
+      <label>Fade (s) <input id="maxAge" type="range" min="4" max="60" step="1" value="18"></label>
+    </div>
+    <div class="control-row" style="opacity:0.8">Click map to set source centre. Drag the blue circle edge to adjust radius via slider. Toggle Manual to use sliders; otherwise press "Use API once" to fetch current wind near the source.</div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+  // ====== Map setup ======
+  const map = L.map('map', { preferCanvas: true }).setView([53.5461, -113.4938], 9);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  // Source geometry: centre + radius circle
+  let sourceCenter = L.latLng(53.5461, -113.4938);
+  const sourceMarker = L.marker(sourceCenter, { draggable: true }).addTo(map)
+    .bindTooltip('Source centre', {permanent:true, direction:'top', offset:[0,-18]});
+  let sourceRadiusM = 300;
+  const sourceCircle = L.circle(sourceCenter, { radius: sourceRadiusM, color: '#2b6cb0', weight: 1.5, fillOpacity: 0.05 }).addTo(map);
+
+  // Click to set source
+  map.on('click', (e) => setSource(e.latlng));
+  sourceMarker.on('move', (e)=> setSource(e.latlng));
+
+  function setSource(ll){
+    sourceCenter = L.latLng(ll.lat, ll.lng);
+    sourceMarker.setLatLng(sourceCenter);
+    sourceCircle.setLatLng(sourceCenter);
+  }
+
+  // ====== Canvas overlay ======
+  const overlayPane = map.getPanes().overlayPane;
+  const canvas = document.createElement('canvas');
+  canvas.style.position = 'absolute';
+  canvas.style.top = 0; canvas.style.left = 0;
+  overlayPane.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+
+  function resizeCanvas(){
+    const size = map.getSize();
+    canvas.width = size.x; canvas.height = size.y;
+    const pos = map._getMapPanePos();
+    L.DomUtil.setPosition(canvas, pos.multiplyBy(-1));
+  }
+  map.on('resize zoom move', resizeCanvas);
+  resizeCanvas();
+
+  const originalSetPos = L.DomUtil.setPosition;
+  L.DomUtil.setPosition = function(el, point) {
+    originalSetPos(el, point);
+    if (el === map.getPanes().mapPane) {
+      const pos = map._getMapPanePos();
+      L.DomUtil.setPosition(canvas, pos.multiplyBy(-1));
+    }
   };
-  stopBtn.onclick = () => { running = false; };
-  speedEl.oninput = () => { speedFactor = parseFloat(speedEl.value); };
-  countEl.oninput = () => { targetCount = parseInt(countEl.value, 10); };
-  trailEl.oninput = () => { maxTrail = parseInt(trailEl.value, 10); };
-  useApiEl.onchange = async () => { if (useApiEl.checked) await refreshWindFromAPI(); };
 
-  // Refresh wind when source is moved
-  source.on('moveend', async () => { if (useApiEl.checked) await refreshWindFromAPI(); });
+  // ====== Params & state ======
+  const R = 6371000; const toDeg = 180/Math.PI;
+  let running = false;
+  let maxTrail = 8;
+  let maxParticles = 4000;
+  let maxLifesec = 18;
+  let spawnPerSec = 300; // particles per second
+  let spawnAccumulator = 0;
 
-  // Start with a seed batch
-  spawn(targetCount);
+  // Wind: manual or from API
+  let manual = true;
+  let manualSpeed = 5.0; // m/s
+  let manualDir = 270;   // deg FROM which the wind blows
+  let wind = { u: -manualSpeed*Math.sin(manualDir*Math.PI/180), v: -manualSpeed*Math.cos(manualDir*Math.PI/180), speed: manualSpeed, dir: manualDir };
+
+  async function refreshWindFromAPI(){
+    try {
+      const ll = sourceCenter;
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${ll.lat.toFixed(4)}&longitude=${ll.lng.toFixed(4)}&hourly=wind_speed_10m,wind_direction_10m&forecast_days=1`;
+      const r = await fetch(url);
+      const j = await r.json();
+      const i = 0; // first hour
+      const spd = j.hourly.wind_speed_10m[i];
+      const dir = j.hourly.wind_direction_10m[i];
+      const rad = dir*Math.PI/180;
+      const u = -spd*Math.sin(rad);
+      const v = -spd*Math.cos(rad);
+      wind = { u, v, speed: spd, dir };
+      windStat.textContent = `wind: ${spd.toFixed(1)} m/s from ${dir.toFixed(0)}° (API)`;
+    } catch (e) {
+      windStat.textContent = 'wind: API failed; keeping previous';
+      console.warn(e);
+    }
+  }
+
+  function setManualWind(){
+    const rad = manualDir*Math.PI/180;
+    const u = -manualSpeed*Math.sin(rad);
+    const v = -manualSpeed*Math.cos(rad);
+    wind = { u, v, speed: manualSpeed, dir: manualDir };
+    windStat.textContent = `wind: ${manualSpeed.toFixed(1)} m/s from ${manualDir.toFixed(0)}° (manual)`;
+  }
+
+  // ====== Particles ======
+  const particles = [];
+
+  function jitterWithinRadiusMeters(centerLL, radiusM){
+    // Uniform in disk
+    const r = radiusM*Math.sqrt(Math.random());
+    const th = Math.random()*Math.PI*2;
+    const dy = r*Math.sin(th); // meters north
+    const dx = r*Math.cos(th); // meters east
+    const dlat = (dy / R) * toDeg;
+    const dlon = (dx / (R*Math.max(1e-6, Math.cos(centerLL.lat*Math.PI/180)))) * toDeg;
+    return L.latLng(centerLL.lat + dlat, centerLL.lng + dlon);
+  }
+
+  function spawn(dt){
+    spawnAccumulator += spawnPerSec*dt;
+    let toMake = Math.floor(spawnAccumulator);
+    spawnAccumulator -= toMake;
+    // Respect maxParticles cap
+    toMake = Math.min(toMake, Math.max(0, maxParticles - particles.length));
+    for (let i=0;i<toMake;i++){
+      const ll = jitterWithinRadiusMeters(sourceCenter, sourceRadiusM);
+      particles.push({ lat: ll.lat, lon: ll.lng, age: 0, trail: [] });
+    }
+  }
+
+  function step(dt){
+    if (manual) setManualWind();
+    spawn(dt);
+
+    const u = wind.u; const v = wind.v; // m/s
+    for (let p of particles){
+      // trail
+      if (maxTrail>0){
+        p.trail.push([p.lat, p.lon]);
+        if (p.trail.length>maxTrail) p.trail.shift();
+      }
+      const coslat = Math.cos(p.lat*Math.PI/180);
+      const dlat = (v / R) * toDeg * dt;
+      const dlon = (u / (R*Math.max(1e-6, coslat))) * toDeg * dt;
+      p.lat += dlat; p.lon += dlon;
+      p.age += dt;
+    }
+    // recycle old particles in place to avoid array churn
+    for (let i=0;i<particles.length;i++){
+      const p = particles[i];
+      if (p.age > maxLifesec){
+        const ll = jitterWithinRadiusMeters(sourceCenter, sourceRadiusM);
+        p.lat = ll.lat; p.lon = ll.lng; p.age = 0; p.trail.length = 0;
+      }
+    }
+  }
+
+  function draw(){
+    const size = map.getSize();
+    ctx.clearRect(0,0,size.x,size.y);
+
+    // Optional fade field for smoky look:
+    // ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    // ctx.fillRect(0,0,size.x,size.y);
+
+    ctx.lineWidth = 1;
+    for (let p of particles){
+      if (p.trail.length>1){
+        ctx.beginPath();
+        const pt0 = map.latLngToLayerPoint(p.trail[0]);
+        ctx.moveTo(pt0.x, pt0.y);
+        for (let i=1;i<p.trail.length;i++){
+          const pti = map.latLngToLayerPoint(p.trail[i]);
+          ctx.lineTo(pti.x, pti.y);
+        }
+        ctx.strokeStyle = 'rgba(80,80,80,0.35)';
+        ctx.stroke();
+      }
+      const pt = map.latLngToLayerPoint([p.lat, p.lon]);
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, 1.6, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(30,30,30,0.85)';
+      ctx.fill();
+    }
+  }
+
+  // ====== Animation loop ======
+  let last = performance.now();
+  let frames = 0, fpsAccum = 0;
+  function animate(){
+    const now = performance.now();
+    const dt = Math.min(0.05, (now-last)/1000); // cap to 50 ms
+    last = now;
+    if (running){
+      step(dt);
+      draw();
+      frames++; fpsAccum += dt;
+      if (fpsAccum>=0.5){
+        fps.textContent = `fps: ${(frames/fpsAccum).toFixed(0)}`;
+        frames=0; fpsAccum=0;
+      }
+    }
+    requestAnimationFrame(animate);
+  }
   requestAnimationFrame(animate);
+
+  // ====== UI wiring ======
+  const startBtn = document.getElementById('start');
+  const stopBtn  = document.getElementById('stop');
+  const fps      = document.getElementById('fps');
+
+  const radiusEl = document.getElementById('radius');
+  const spawnEl  = document.getElementById('spawn');
+  const maxpEl   = document.getElementById('maxp');
+  const trailEl  = document.getElementById('trail');
+  const ageEl    = document.getElementById('maxAge');
+
+  const manualEl = document.getElementById('manualWind');
+  const wsEl     = document.getElementById('windSpeed');
+  const wdEl     = document.getElementById('windDir');
+  const windBtn  = document.getElementById('apiWind');
+  const windStat = document.getElementById('windStat');
+
+  startBtn.onclick = () => { running = true; last = performance.now(); };
+  stopBtn.onclick  = () => { running = false; };
+
+  radiusEl.oninput = () => { sourceRadiusM = parseFloat(radiusEl.value); sourceCircle.setRadius(sourceRadiusM); };
+  spawnEl.oninput  = () => { spawnPerSec = parseFloat(spawnEl.value); };
+  maxpEl.oninput   = () => { maxParticles = parseInt(maxpEl.value,10); };
+  trailEl.oninput  = () => { maxTrail = parseInt(trailEl.value,10); };
+  ageEl.oninput    = () => { maxLifesec = parseInt(ageEl.value,10); };
+
+  manualEl.onchange = () => { manual = manualEl.checked; if (manual) setManualWind(); };
+  wsEl.oninput = () => { manualSpeed = parseFloat(wsEl.value); if (manual) setManualWind(); };
+  wdEl.oninput = () => { manualDir = parseFloat(wdEl.value); if (manual) setManualWind(); };
+  windBtn.onclick = async () => { manual = false; manualEl.checked = false; await refreshWindFromAPI(); };
+
+  // Seed a few so you see something immediately when starting
+  (function seed(){ for (let i=0;i<100;i++){ const ll = jitterWithinRadiusMeters(sourceCenter, sourceRadiusM); particles.push({lat: ll.lat, lon: ll.lng, age: 0, trail: []}); } })();
+
+  // Initial wind label
+  setManualWind();
   </script>
 </body>
 </html>
