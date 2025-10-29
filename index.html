@@ -47,12 +47,8 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script>
+  <script defer>
   (function(){
-    // Prevent double-initialization if the script is included twice or navigated via PJAX
-    if (window.__PLUME_INITED__) return; 
-    window.__PLUME_INITED__ = true;
-
     // ====== Early declarations used by functions ======
     const R = 6371000; 
     const toDeg = 180/Math.PI;
