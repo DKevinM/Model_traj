@@ -2,17 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Leaflet Particle Smoke — Live Wind + Gaussian Dispersion</title>
+  <title>Leaflet Particle Smoke — Live Wind + Gaussian (Stable)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <style>
     html, body { height: 100%; margin: 0; }
     #map { width: 100%; height: 100%; }
-    .control-bar { position:absolute; top:10px; left:10px; z-index:1000; background:rgba(255,255,255,.95); padding:10px 12px; border-radius:10px; font:14px system-ui, Arial; box-shadow:0 2px 10px rgba(0,0,0,.15); max-width:760px; }
+    .control-bar { position:absolute; top:10px; left:10px; z-index:1000; background:rgba(255,255,255,.95); padding:10px 12px; border-radius:10px; font:14px system-ui, Arial; box-shadow:0 2px 10px rgba(0,0,0,.15); max-width:780px; }
     .control-row { display:flex; gap:12px; align-items:center; margin:6px 0; flex-wrap:wrap; }
     .btn { border:1px solid #ccc; padding:4px 10px; border-radius:6px; background:#f7f7f7; cursor:pointer; }
     input[type=range]{ width:180px; }
-    .stat{ opacity:.8; }
+    .stat{ opacity:.85; }
   </style>
 </head>
 <body>
@@ -24,10 +24,10 @@
       <span class="stat" id="fps">fps: —</span>
     </div>
     <div class="control-row">
-      <strong>Source area</strong>
+      <strong>Source</strong>
       <label>Radius (m) <input id="radius" type="range" min="10" max="3000" step="10" value="200"></label>
-      <label>Spawn rate (p/s) <input id="spawn" type="range" min="10" max="4000" step="10" value="600"></label>
-      <label>Max particles <input id="maxp" type="range" min="200" max="25000" step="200" value="8000"></label>
+      <label>Spawn (p/s) <input id="spawn" type="range" min="10" max="4000" step="10" value="600"></label>
+      <label>Max p <input id="maxp" type="range" min="200" max="25000" step="200" value="8000"></label>
       <span class="stat">Click map to move centre</span>
     </div>
     <div class="control-row">
@@ -42,68 +42,59 @@
     </div>
     <div class="control-row">
       <strong>Dispersion</strong>
-      <label>Diffusivity K (m²/s) <input id="K" type="range" min="0" max="200" step="1" value="30"></label>
-      <label>Tail length (frames) <input id="trail" type="range" min="0" max="120" step="1" value="12"></label>
-      <label>Tail fade (0–1) <input id="tailFade" type="range" min="0" max="1" step="0.05" value="0.35"></label>
+      <label>K (m²/s) <input id="K" type="range" min="0" max="200" step="1" value="30"></label>
+      <label>Tail len <input id="trail" type="range" min="0" max="120" step="1" value="12"></label>
+      <label>Tail fade <input id="tailFade" type="range" min="0" max="1" step="0.05" value="0.35"></label>
       <label>Max age (s) <input id="maxAge" type="range" min="4" max="120" step="1" value="30"></label>
       <label><input id="gaussPuff" type="checkbox"> Puff bursts</label>
-      <label>Burst puffs/sec <input id="puffRate" type="range" min="0" max="5" step="0.1" value="0"></label>
+      <label>Bursts/sec <input id="puffRate" type="range" min="0" max="5" step="0.1" value="0"></label>
     </div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
   <script defer>
   window.addEventListener('DOMContentLoaded', () => {
-    // ===== Declarations =====
+    // ===== Constants & state =====
     const R = 6371000, toDeg = 180/Math.PI;
     let running = false;
 
-    // Emission/source
-    let sourceRadiusM = 200; // UI
-    let spawnPerSec = 600, spawnAcc = 0, maxParticles = 8000;
-    let gaussMode = false, puffRate = 0; // puffs per second
+    // Source
+    let sourceRadiusM = 200, spawnPerSec = 600, spawnAcc = 0, maxParticles = 8000;
 
     // Trails/aging
     let maxTrail = 12, tailFade = 0.35, maxLifesec = 30;
 
-    // Wind / API
+    // Wind
     let manual = true, manualSpeed = 6.0, manualDir = 270;
     let autoWind = false, autoWindEveryMin = 10, autoTimer = null;
     let wind = {u:0,v:0,speed:0,dir:0};
 
-    // Gaussian diffusion (random walk): std per step = sqrt(2*K*dt)
+    // Diffusion
     let K = 30; // m^2/s
+
+    // Puffs
+    let gaussMode = false, puffRate = 0; // per sec
 
     // Particles
     const particles = [];
 
-    // ===== Map =====
-    const map = // --- Safely (re)initialize Leaflet map in this container ---
-const mapDiv = document.getElementById('map');
-// If Leaflet has already bound a map here, unbind it cleanly
-if (mapDiv && mapDiv._leaflet_id) {
-  try { if (mapDiv._leaflet_map_instance) { mapDiv._leaflet_map_instance.remove(); } } catch(e) { /* ignore */ }
-  mapDiv._leaflet_id = null; // force Leaflet to treat it as fresh
-}
-const map = L.map('map', { preferCanvas:true });
-map.setView([53.5461,-113.4938], 10);
-mapDiv._leaflet_map_instance = map;
+    // ===== Map (no double init) =====
+    const map = L.map('map', { preferCanvas:true });
+    map.setView([53.5461, -113.4938], 10);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19}).addTo(map);
 
     let sourceCenter = L.latLng(53.5461, -113.4938);
     const marker = L.marker(sourceCenter, {draggable:true}).addTo(map)
       .bindTooltip('Source', {permanent:true, direction:'top', offset:[0,-18]});
-    marker.on('move', e => { sourceCenter = e.latlng; if (autoWind) refreshWindFromAPI(); circle.setLatLng(sourceCenter); });
-
+    marker.on('move', e => { sourceCenter = e.latlng; circle.setLatLng(sourceCenter); if (autoWind) refreshWindFromAPI(); });
     const circle = L.circle(sourceCenter, { radius: sourceRadiusM, color:'#2b6cb0', weight:1.5, fillOpacity:0.05 }).addTo(map);
     map.on('click', e => { sourceCenter = e.latlng; marker.setLatLng(sourceCenter); circle.setLatLng(sourceCenter); if (autoWind) refreshWindFromAPI(); });
 
-    // Canvas overlay
+    // ===== Canvas overlay =====
     const canvas = document.createElement('canvas');
     canvas.style.position='absolute'; canvas.style.top=0; canvas.style.left=0;
     map.getPanes().overlayPane.appendChild(canvas);
     const ctx = canvas.getContext('2d');
-
     function resizeCanvas(){
       const s = map.getSize();
       canvas.width = s.x; canvas.height = s.y;
@@ -114,16 +105,16 @@ mapDiv._leaflet_map_instance = map;
     map.on('resize zoom move', resizeCanvas);
     resizeCanvas();
 
-    // ===== UI =====
+    // ===== UI wiring =====
     const fpsEl = document.getElementById('fps');
     const windStat = document.getElementById('windStat');
 
-    // Source controls
+    // Source
     document.getElementById('radius').oninput = e => { sourceRadiusM = +e.target.value; circle.setRadius(sourceRadiusM); };
     document.getElementById('spawn').oninput  = e => { spawnPerSec   = +e.target.value; };
     document.getElementById('maxp').oninput   = e => { maxParticles  = +e.target.value; };
 
-    // Wind controls
+    // Wind
     const manualEl = document.getElementById('manualWind');
     const wsEl = document.getElementById('windSpeed');
     const wdEl = document.getElementById('windDir');
@@ -159,7 +150,7 @@ mapDiv._leaflet_map_instance = map;
         const url = `https://api.open-meteo.com/v1/forecast?latitude=${sourceCenter.lat.toFixed(4)}&longitude=${sourceCenter.lng.toFixed(4)}&hourly=wind_speed_10m,wind_direction_10m&forecast_days=1`;
         const r = await fetch(url);
         const j = await r.json();
-        const i = 0; // first hour
+        const i = 0;
         const spd = j?.hourly?.wind_speed_10m?.[i];
         const dir = j?.hourly?.wind_direction_10m?.[i];
         if (spd==null || dir==null) throw new Error('API missing fields');
@@ -172,7 +163,7 @@ mapDiv._leaflet_map_instance = map;
       }
     }
 
-    // Dispersion controls
+    // Dispersion
     document.getElementById('K').oninput = e => { K = +e.target.value; };
     document.getElementById('trail').oninput = e => { maxTrail = +e.target.value; };
     document.getElementById('tailFade').oninput = e => { tailFade = +e.target.value; };
@@ -182,7 +173,7 @@ mapDiv._leaflet_map_instance = map;
     gaussEl.onchange = () => { gaussMode = gaussEl.checked; };
     puffEl.oninput   = () => { puffRate  = +puffEl.value; };
 
-    // Start/Stop
+    // Buttons
     document.getElementById('start').onclick = () => { running = true; last = performance.now(); };
     document.getElementById('stop').onclick  = () => { running = false; };
 
@@ -190,14 +181,13 @@ mapDiv._leaflet_map_instance = map;
     function jitterDiskMeters(centerLL, radiusM){
       const r = radiusM*Math.sqrt(Math.random());
       const th = Math.random()*Math.PI*2;
-      const dy = r*Math.sin(th), dx = r*Math.cos(th); // meters
+      const dy = r*Math.sin(th), dx = r*Math.cos(th);
       const dlat = (dy/R)*toDeg;
       const dlon = (dx/(R*Math.max(1e-6, Math.cos(centerLL.lat*Math.PI/180))))*toDeg;
       return L.latLng(centerLL.lat + dlat, centerLL.lng + dlon);
     }
 
     function spawn(dt){
-      // steady emission
       spawnAcc += spawnPerSec*dt;
       let make = Math.floor(spawnAcc);
       spawnAcc -= make;
@@ -206,15 +196,12 @@ mapDiv._leaflet_map_instance = map;
         const ll = jitterDiskMeters(sourceCenter, sourceRadiusM);
         particles.push({ lat: ll.lat, lon: ll.lng, age: 0, trail: [], puff:false });
       }
-      // optional puff bursts (Gaussian puffs: spawn a concentrated group)
       if (gaussMode && puffRate>0){
         const expected = puffRate*dt;
-        const count = Math.random()<expected ? 1 : 0; // simple Poisson(~λ=expected)
-        for (let k=0;k<count;k++){
+        if (Math.random() < expected){
           const ll0 = jitterDiskMeters(sourceCenter, Math.max(5, 0.2*sourceRadiusM));
           const puffN = Math.min(200, Math.max(20, Math.round(spawnPerSec*0.2)));
           for (let i=0;i<puffN && particles.length<maxParticles;i++){
-            // start near ll0 with tight sigma ~ radius/10
             const ll = jitterDiskMeters(ll0, Math.max(5, sourceRadiusM*0.1));
             particles.push({ lat: ll.lat, lon: ll.lng, age: 0, trail: [], puff:true });
           }
@@ -222,40 +209,31 @@ mapDiv._leaflet_map_instance = map;
       }
     }
 
-    // ===== Physics step (advection + Gaussian random walk) =====
+    // ===== Physics =====
     function step(dt){
       if (manual && !autoWind) updateManualWind();
       spawn(dt);
-
-      const u = wind.u, v = wind.v; // m/s
-      const sig = Math.sqrt(Math.max(0, 2*K*dt)); // meters
+      const u = wind.u, v = wind.v;
+      const sig = Math.sqrt(Math.max(0, 2*K*dt));
 
       for (let p of particles){
-        // Tail recording
         if (maxTrail>0){
           p.trail.push([p.lat, p.lon]);
           if (p.trail.length>maxTrail) p.trail.shift();
         }
-
-        // Advection (m/s) → deg/s
         const coslat = Math.cos(p.lat*Math.PI/180);
         p.lat += (v/R)*toDeg*dt;
         p.lon += (u/(R*Math.max(1e-6,coslat)))*toDeg*dt;
-
-        // Gaussian diffusion: random step in meters
         if (sig>0){
           const th = Math.random()*2*Math.PI;
-          const dy = sig*Math.sin(th); // N
-          const dx = sig*Math.cos(th); // E
+          const dy = sig*Math.sin(th), dx = sig*Math.cos(th);
           p.lat += (dy/R)*toDeg;
           p.lon += (dx/(R*Math.max(1e-6, Math.cos(p.lat*Math.PI/180))))*toDeg;
         }
-
         p.age += dt;
         if (p.age > maxLifesec){
-          // recycle to keep density steady
           const ll = jitterDiskMeters(sourceCenter, sourceRadiusM);
-          p.lat = ll.lat; p.lon = ll.lng; p.age = 0; p.trail.length = 0; p.puff = false;
+          p.lat = ll.lat; p.lon = ll.lng; p.age = 0; p.trail.length = 0; p.puff=false;
         }
       }
     }
@@ -265,8 +243,6 @@ mapDiv._leaflet_map_instance = map;
       const s = map.getSize();
       ctx.clearRect(0,0,s.x,s.y);
       ctx.lineWidth = 1;
-      const tailColor = (a)=> `rgba(80,80,80,${tailFade})`;
-
       for (let p of particles){
         if (p.trail.length>1){
           ctx.beginPath();
@@ -274,13 +250,12 @@ mapDiv._leaflet_map_instance = map;
           for (let i=1;i<p.trail.length;i++){
             const pti = map.latLngToLayerPoint(p.trail[i]); ctx.lineTo(pti.x, pti.y);
           }
-          ctx.strokeStyle = tailColor(p.age/maxLifesec);
+          ctx.strokeStyle = `rgba(80,80,80,${tailFade})`;
           ctx.stroke();
         }
         const pt = map.latLngToLayerPoint([p.lat, p.lon]);
         ctx.beginPath(); ctx.arc(pt.x, pt.y, 1.6, 0, Math.PI*2);
-        ctx.fillStyle = 'rgba(30,30,30,0.85)';
-        ctx.fill();
+        ctx.fillStyle = 'rgba(30,30,30,0.85)'; ctx.fill();
       }
     }
 
@@ -288,27 +263,19 @@ mapDiv._leaflet_map_instance = map;
     let last = performance.now(), frames=0, acc=0;
     function animate(){
       const now = performance.now();
-      const dt = Math.min(0.05, (now-last)/1000); // cap 50 ms
+      const dt = Math.min(0.05, (now-last)/1000);
       last = now;
-      if (running){
-        step(dt);
-        draw();
-        frames++; acc += dt;
-        if (acc>=0.5){ fpsEl.textContent = `fps: ${(frames/acc).toFixed(0)}`; frames=0; acc=0; }
-      }
+      if (running){ step(dt); draw(); frames++; acc += dt; if (acc>=0.5){ fpsEl.textContent = `fps: ${(frames/acc).toFixed(0)}`; frames=0; acc=0; } }
       requestAnimationFrame(animate);
     }
     requestAnimationFrame(animate);
 
-    // ===== Seed, init, and start =====
-    (function seed(){ for (let i=0;i<1200;i++){ const ll = jitterDiskMeters(sourceCenter, sourceRadiusM); particles.push({lat: ll.lat, lon: ll.lng, age: Math.random()*maxLifesec*0.7, trail: []}); } })();
+    // ===== Seed and autostart =====
+    for (let i=0;i<1200;i++){ const ll = jitterDiskMeters(sourceCenter, sourceRadiusM); particles.push({lat: ll.lat, lon: ll.lng, age: Math.random()*maxLifesec*0.7, trail: []}); }
     updateManualWind();
     draw();
-    running = true; // autostart
+    running = true;
 
-    // Buttons
-    document.getElementById('start').onclick = () => { running = true; last = performance.now(); };
-    document.getElementById('stop').onclick  = () => { running = false; };
   });
   </script>
 </body>
@@ -317,17 +284,17 @@ mapDiv._leaflet_map_instance = map;
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Leaflet Particle Smoke — Live Wind + Gaussian Dispersion</title>
+  <title>Leaflet Particle Smoke — Live Wind + Gaussian (Stable)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <style>
     html, body { height: 100%; margin: 0; }
     #map { width: 100%; height: 100%; }
-    .control-bar { position:absolute; top:10px; left:10px; z-index:1000; background:rgba(255,255,255,.95); padding:10px 12px; border-radius:10px; font:14px system-ui, Arial; box-shadow:0 2px 10px rgba(0,0,0,.15); max-width:760px; }
+    .control-bar { position:absolute; top:10px; left:10px; z-index:1000; background:rgba(255,255,255,.95); padding:10px 12px; border-radius:10px; font:14px system-ui, Arial; box-shadow:0 2px 10px rgba(0,0,0,.15); max-width:780px; }
     .control-row { display:flex; gap:12px; align-items:center; margin:6px 0; flex-wrap:wrap; }
     .btn { border:1px solid #ccc; padding:4px 10px; border-radius:6px; background:#f7f7f7; cursor:pointer; }
     input[type=range]{ width:180px; }
-    .stat{ opacity:.8; }
+    .stat{ opacity:.85; }
   </style>
 </head>
 <body>
@@ -339,10 +306,10 @@ mapDiv._leaflet_map_instance = map;
       <span class="stat" id="fps">fps: —</span>
     </div>
     <div class="control-row">
-      <strong>Source area</strong>
+      <strong>Source</strong>
       <label>Radius (m) <input id="radius" type="range" min="10" max="3000" step="10" value="200"></label>
-      <label>Spawn rate (p/s) <input id="spawn" type="range" min="10" max="4000" step="10" value="600"></label>
-      <label>Max particles <input id="maxp" type="range" min="200" max="25000" step="200" value="8000"></label>
+      <label>Spawn (p/s) <input id="spawn" type="range" min="10" max="4000" step="10" value="600"></label>
+      <label>Max p <input id="maxp" type="range" min="200" max="25000" step="200" value="8000"></label>
       <span class="stat">Click map to move centre</span>
     </div>
     <div class="control-row">
@@ -357,59 +324,59 @@ mapDiv._leaflet_map_instance = map;
     </div>
     <div class="control-row">
       <strong>Dispersion</strong>
-      <label>Diffusivity K (m²/s) <input id="K" type="range" min="0" max="200" step="1" value="30"></label>
-      <label>Tail length (frames) <input id="trail" type="range" min="0" max="120" step="1" value="12"></label>
-      <label>Tail fade (0–1) <input id="tailFade" type="range" min="0" max="1" step="0.05" value="0.35"></label>
+      <label>K (m²/s) <input id="K" type="range" min="0" max="200" step="1" value="30"></label>
+      <label>Tail len <input id="trail" type="range" min="0" max="120" step="1" value="12"></label>
+      <label>Tail fade <input id="tailFade" type="range" min="0" max="1" step="0.05" value="0.35"></label>
       <label>Max age (s) <input id="maxAge" type="range" min="4" max="120" step="1" value="30"></label>
       <label><input id="gaussPuff" type="checkbox"> Puff bursts</label>
-      <label>Burst puffs/sec <input id="puffRate" type="range" min="0" max="5" step="0.1" value="0"></label>
+      <label>Bursts/sec <input id="puffRate" type="range" min="0" max="5" step="0.1" value="0"></label>
     </div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
   <script defer>
   window.addEventListener('DOMContentLoaded', () => {
-    // ===== Declarations =====
+    // ===== Constants & state =====
     const R = 6371000, toDeg = 180/Math.PI;
     let running = false;
 
-    // Emission/source
-    let sourceRadiusM = 200; // UI
-    let spawnPerSec = 600, spawnAcc = 0, maxParticles = 8000;
-    let gaussMode = false, puffRate = 0; // puffs per second
+    // Source
+    let sourceRadiusM = 200, spawnPerSec = 600, spawnAcc = 0, maxParticles = 8000;
 
     // Trails/aging
     let maxTrail = 12, tailFade = 0.35, maxLifesec = 30;
 
-    // Wind / API
+    // Wind
     let manual = true, manualSpeed = 6.0, manualDir = 270;
     let autoWind = false, autoWindEveryMin = 10, autoTimer = null;
     let wind = {u:0,v:0,speed:0,dir:0};
 
-    // Gaussian diffusion (random walk): std per step = sqrt(2*K*dt)
+    // Diffusion
     let K = 30; // m^2/s
+
+    // Puffs
+    let gaussMode = false, puffRate = 0; // per sec
 
     // Particles
     const particles = [];
 
-    // ===== Map =====
-    const map = L.map('map', { preferCanvas:true }).setView([53.5461,-113.4938], 10);
+    // ===== Map (no double init) =====
+    const map = L.map('map', { preferCanvas:true });
+    map.setView([53.5461, -113.4938], 10);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19}).addTo(map);
 
     let sourceCenter = L.latLng(53.5461, -113.4938);
     const marker = L.marker(sourceCenter, {draggable:true}).addTo(map)
       .bindTooltip('Source', {permanent:true, direction:'top', offset:[0,-18]});
-    marker.on('move', e => { sourceCenter = e.latlng; if (autoWind) refreshWindFromAPI(); circle.setLatLng(sourceCenter); });
-
+    marker.on('move', e => { sourceCenter = e.latlng; circle.setLatLng(sourceCenter); if (autoWind) refreshWindFromAPI(); });
     const circle = L.circle(sourceCenter, { radius: sourceRadiusM, color:'#2b6cb0', weight:1.5, fillOpacity:0.05 }).addTo(map);
     map.on('click', e => { sourceCenter = e.latlng; marker.setLatLng(sourceCenter); circle.setLatLng(sourceCenter); if (autoWind) refreshWindFromAPI(); });
 
-    // Canvas overlay
+    // ===== Canvas overlay =====
     const canvas = document.createElement('canvas');
     canvas.style.position='absolute'; canvas.style.top=0; canvas.style.left=0;
     map.getPanes().overlayPane.appendChild(canvas);
     const ctx = canvas.getContext('2d');
-
     function resizeCanvas(){
       const s = map.getSize();
       canvas.width = s.x; canvas.height = s.y;
@@ -420,16 +387,16 @@ mapDiv._leaflet_map_instance = map;
     map.on('resize zoom move', resizeCanvas);
     resizeCanvas();
 
-    // ===== UI =====
+    // ===== UI wiring =====
     const fpsEl = document.getElementById('fps');
     const windStat = document.getElementById('windStat');
 
-    // Source controls
+    // Source
     document.getElementById('radius').oninput = e => { sourceRadiusM = +e.target.value; circle.setRadius(sourceRadiusM); };
     document.getElementById('spawn').oninput  = e => { spawnPerSec   = +e.target.value; };
     document.getElementById('maxp').oninput   = e => { maxParticles  = +e.target.value; };
 
-    // Wind controls
+    // Wind
     const manualEl = document.getElementById('manualWind');
     const wsEl = document.getElementById('windSpeed');
     const wdEl = document.getElementById('windDir');
@@ -465,7 +432,7 @@ mapDiv._leaflet_map_instance = map;
         const url = `https://api.open-meteo.com/v1/forecast?latitude=${sourceCenter.lat.toFixed(4)}&longitude=${sourceCenter.lng.toFixed(4)}&hourly=wind_speed_10m,wind_direction_10m&forecast_days=1`;
         const r = await fetch(url);
         const j = await r.json();
-        const i = 0; // first hour
+        const i = 0;
         const spd = j?.hourly?.wind_speed_10m?.[i];
         const dir = j?.hourly?.wind_direction_10m?.[i];
         if (spd==null || dir==null) throw new Error('API missing fields');
@@ -478,7 +445,7 @@ mapDiv._leaflet_map_instance = map;
       }
     }
 
-    // Dispersion controls
+    // Dispersion
     document.getElementById('K').oninput = e => { K = +e.target.value; };
     document.getElementById('trail').oninput = e => { maxTrail = +e.target.value; };
     document.getElementById('tailFade').oninput = e => { tailFade = +e.target.value; };
@@ -488,7 +455,7 @@ mapDiv._leaflet_map_instance = map;
     gaussEl.onchange = () => { gaussMode = gaussEl.checked; };
     puffEl.oninput   = () => { puffRate  = +puffEl.value; };
 
-    // Start/Stop
+    // Buttons
     document.getElementById('start').onclick = () => { running = true; last = performance.now(); };
     document.getElementById('stop').onclick  = () => { running = false; };
 
@@ -496,14 +463,13 @@ mapDiv._leaflet_map_instance = map;
     function jitterDiskMeters(centerLL, radiusM){
       const r = radiusM*Math.sqrt(Math.random());
       const th = Math.random()*Math.PI*2;
-      const dy = r*Math.sin(th), dx = r*Math.cos(th); // meters
+      const dy = r*Math.sin(th), dx = r*Math.cos(th);
       const dlat = (dy/R)*toDeg;
       const dlon = (dx/(R*Math.max(1e-6, Math.cos(centerLL.lat*Math.PI/180))))*toDeg;
       return L.latLng(centerLL.lat + dlat, centerLL.lng + dlon);
     }
 
     function spawn(dt){
-      // steady emission
       spawnAcc += spawnPerSec*dt;
       let make = Math.floor(spawnAcc);
       spawnAcc -= make;
@@ -512,15 +478,12 @@ mapDiv._leaflet_map_instance = map;
         const ll = jitterDiskMeters(sourceCenter, sourceRadiusM);
         particles.push({ lat: ll.lat, lon: ll.lng, age: 0, trail: [], puff:false });
       }
-      // optional puff bursts (Gaussian puffs: spawn a concentrated group)
       if (gaussMode && puffRate>0){
         const expected = puffRate*dt;
-        const count = Math.random()<expected ? 1 : 0; // simple Poisson(~λ=expected)
-        for (let k=0;k<count;k++){
+        if (Math.random() < expected){
           const ll0 = jitterDiskMeters(sourceCenter, Math.max(5, 0.2*sourceRadiusM));
           const puffN = Math.min(200, Math.max(20, Math.round(spawnPerSec*0.2)));
           for (let i=0;i<puffN && particles.length<maxParticles;i++){
-            // start near ll0 with tight sigma ~ radius/10
             const ll = jitterDiskMeters(ll0, Math.max(5, sourceRadiusM*0.1));
             particles.push({ lat: ll.lat, lon: ll.lng, age: 0, trail: [], puff:true });
           }
@@ -528,40 +491,31 @@ mapDiv._leaflet_map_instance = map;
       }
     }
 
-    // ===== Physics step (advection + Gaussian random walk) =====
+    // ===== Physics =====
     function step(dt){
       if (manual && !autoWind) updateManualWind();
       spawn(dt);
-
-      const u = wind.u, v = wind.v; // m/s
-      const sig = Math.sqrt(Math.max(0, 2*K*dt)); // meters
+      const u = wind.u, v = wind.v;
+      const sig = Math.sqrt(Math.max(0, 2*K*dt));
 
       for (let p of particles){
-        // Tail recording
         if (maxTrail>0){
           p.trail.push([p.lat, p.lon]);
           if (p.trail.length>maxTrail) p.trail.shift();
         }
-
-        // Advection (m/s) → deg/s
         const coslat = Math.cos(p.lat*Math.PI/180);
         p.lat += (v/R)*toDeg*dt;
         p.lon += (u/(R*Math.max(1e-6,coslat)))*toDeg*dt;
-
-        // Gaussian diffusion: random step in meters
         if (sig>0){
           const th = Math.random()*2*Math.PI;
-          const dy = sig*Math.sin(th); // N
-          const dx = sig*Math.cos(th); // E
+          const dy = sig*Math.sin(th), dx = sig*Math.cos(th);
           p.lat += (dy/R)*toDeg;
           p.lon += (dx/(R*Math.max(1e-6, Math.cos(p.lat*Math.PI/180))))*toDeg;
         }
-
         p.age += dt;
         if (p.age > maxLifesec){
-          // recycle to keep density steady
           const ll = jitterDiskMeters(sourceCenter, sourceRadiusM);
-          p.lat = ll.lat; p.lon = ll.lng; p.age = 0; p.trail.length = 0; p.puff = false;
+          p.lat = ll.lat; p.lon = ll.lng; p.age = 0; p.trail.length = 0; p.puff=false;
         }
       }
     }
@@ -571,8 +525,6 @@ mapDiv._leaflet_map_instance = map;
       const s = map.getSize();
       ctx.clearRect(0,0,s.x,s.y);
       ctx.lineWidth = 1;
-      const tailColor = (a)=> `rgba(80,80,80,${tailFade})`;
-
       for (let p of particles){
         if (p.trail.length>1){
           ctx.beginPath();
@@ -580,13 +532,12 @@ mapDiv._leaflet_map_instance = map;
           for (let i=1;i<p.trail.length;i++){
             const pti = map.latLngToLayerPoint(p.trail[i]); ctx.lineTo(pti.x, pti.y);
           }
-          ctx.strokeStyle = tailColor(p.age/maxLifesec);
+          ctx.strokeStyle = `rgba(80,80,80,${tailFade})`;
           ctx.stroke();
         }
         const pt = map.latLngToLayerPoint([p.lat, p.lon]);
         ctx.beginPath(); ctx.arc(pt.x, pt.y, 1.6, 0, Math.PI*2);
-        ctx.fillStyle = 'rgba(30,30,30,0.85)';
-        ctx.fill();
+        ctx.fillStyle = 'rgba(30,30,30,0.85)'; ctx.fill();
       }
     }
 
@@ -594,27 +545,19 @@ mapDiv._leaflet_map_instance = map;
     let last = performance.now(), frames=0, acc=0;
     function animate(){
       const now = performance.now();
-      const dt = Math.min(0.05, (now-last)/1000); // cap 50 ms
+      const dt = Math.min(0.05, (now-last)/1000);
       last = now;
-      if (running){
-        step(dt);
-        draw();
-        frames++; acc += dt;
-        if (acc>=0.5){ fpsEl.textContent = `fps: ${(frames/acc).toFixed(0)}`; frames=0; acc=0; }
-      }
+      if (running){ step(dt); draw(); frames++; acc += dt; if (acc>=0.5){ fpsEl.textContent = `fps: ${(frames/acc).toFixed(0)}`; frames=0; acc=0; } }
       requestAnimationFrame(animate);
     }
     requestAnimationFrame(animate);
 
-    // ===== Seed, init, and start =====
-    (function seed(){ for (let i=0;i<1200;i++){ const ll = jitterDiskMeters(sourceCenter, sourceRadiusM); particles.push({lat: ll.lat, lon: ll.lng, age: Math.random()*maxLifesec*0.7, trail: []}); } })();
+    // ===== Seed and autostart =====
+    for (let i=0;i<1200;i++){ const ll = jitterDiskMeters(sourceCenter, sourceRadiusM); particles.push({lat: ll.lat, lon: ll.lng, age: Math.random()*maxLifesec*0.7, trail: []}); }
     updateManualWind();
     draw();
-    running = true; // autostart
+    running = true;
 
-    // Buttons
-    document.getElementById('start').onclick = () => { running = true; last = performance.now(); };
-    document.getElementById('stop').onclick  = () => { running = false; };
   });
   </script>
 </body>
