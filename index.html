@@ -78,7 +78,16 @@
     const particles = [];
 
     // ===== Map =====
-    const map = L.map('map', { preferCanvas:true }).setView([53.5461,-113.4938], 10);
+    const map = // --- Safely (re)initialize Leaflet map in this container ---
+const mapDiv = document.getElementById('map');
+// If Leaflet has already bound a map here, unbind it cleanly
+if (mapDiv && mapDiv._leaflet_id) {
+  try { if (mapDiv._leaflet_map_instance) { mapDiv._leaflet_map_instance.remove(); } } catch(e) { /* ignore */ }
+  mapDiv._leaflet_id = null; // force Leaflet to treat it as fresh
+}
+const map = L.map('map', { preferCanvas:true });
+map.setView([53.5461,-113.4938], 10);
+mapDiv._leaflet_map_instance = map;
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19}).addTo(map);
 
     let sourceCenter = L.latLng(53.5461, -113.4938);
