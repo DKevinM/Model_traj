@@ -27,7 +27,7 @@
       <strong>Source</strong>
       <label>Radius (m) <input id="radius" type="range" min="10" max="3000" step="10" value="10"></label>
       <label>Spawn (p/s) <input id="spawn" type="range" min="10" max="4000" step="10" value="600"></label>
-      <label>Max p <input id="maxp" type="range" min="200" max="25000" step="200" value="8000"></label>
+      <label>Max p <input id="maxp" type="range" min="200" max="25000" step="200" value="5000"></label>
       <span class="stat">Click map to move centre</span>
     </div>
     <div class="control-row">
@@ -59,10 +59,10 @@
     let running = false;
 
     // Source
-    let sourceRadiusM = 10, spawnPerSec = 600, spawnAcc = 0, maxParticles = 8000;
+    let sourceRadiusM = 10, spawnPerSec = 600, spawnAcc = 0, maxParticles = 2000;
 
     // Trails/aging
-    let maxTrail = 12, tailFade = 0.35, maxLifesec = 30;
+    let maxTrail = 6, tailFade = 0.35, maxLifesec = 30;
 
     // Wind
     let manual = true, manualSpeed = 6.0, manualDir = 270;
