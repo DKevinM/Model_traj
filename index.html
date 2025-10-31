@@ -148,13 +148,24 @@
     document.getElementById('gaussPuff').onchange = e => { gaussMode = e.target.checked; };
     document.getElementById('puffRate').oninput = e => { puffRate = +e.target.value; };
     document.getElementById('timeScale').oninput = e => { timeScale = +e.target.value; };
-    let mode = 'cont';
-    document.getElementById('mode').onchange = e => { mode = e.target.value; };
-    document.getElementById('reseed').onclick = () => {
-      particles.length = 0;
-      if (mode === 'cont' || mode === 'both') seedSome(1200);
-      draw();
-    };
+    // === Mode selector ===
+    const modeEl = document.getElementById('mode');
+    let mode = modeEl.value;
+    
+    modeEl.addEventListener('change', () => {
+      mode = modeEl.value;
+      spawnAcc = 0;                    // drop any carry-over from continuous
+      if (mode === 'puff') {
+        particles.length = 0;          // clear seeded/continuous cloud
+        draw();
+        // ensure you see puffs without extra clicks
+        if (puffRate === 0) {
+          puffRate = 1;
+          document.getElementById('puffRate').value = 1;
+        }
+      }
+    });
+
 
     
                          
@@ -329,10 +340,10 @@
 
     // ===== Seed & autostart =====
     // Seed only if not in pure puff mode
-    if (mode === 'cont' || mode === 'both') seedSome(1200);
+    // if (mode === 'cont' || mode === 'both') seedSome(1200);
     updateManualWind();
     draw();
-    running = true;
+    // running = true;
   });
   </script>
 </body>
