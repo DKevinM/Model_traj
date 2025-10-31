@@ -40,7 +40,7 @@
       <button id="windNow" class="btn">Refresh now</button>
       <span class="stat" id="windStat">wind: —</span>
     </div>
-    <div class="control-row">
+    <div >
       <strong>Dispersion</strong>
       <label>K (m²/s) <input id="K" type="range" min="0" max="200" step="1" value="30"></label>
       <label>Tail len <input id="trail" type="range" min="0" max="120" step="1" value="12"></label>
@@ -49,9 +49,18 @@
       <label><input id="gaussPuff" type="checkbox"> Puff bursts</label>
       <label>Bursts/sec <input id="puffRate" type="range" min="0" max="5" step="0.1" value="0"></label>
       <label>Time × <input id="timeScale" type="range" min="1" max="200" step="1" value="30"></label>
+      <label>Mode
+        <select id="mode">
+          <option value="cont" selected>Continuous</option>
+          <option value="puff">Puff</option>
+          <option value="both">Both</option>
+        </select>
+      </label>
+      <button id="reseed" class="btn">Reseed now</button>
     </div>
   </div>
 
+  
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
   <script defer>
   window.addEventListener('DOMContentLoaded', () => {
@@ -144,16 +153,7 @@
     document.getElementById('reseed').onclick = () => { particles.length = 0; seedSome(1200); draw(); };
 
     
-    <label>Mode
-      <select id="mode">
-        <option value="cont" selected>Continuous</option>
-        <option value="puff">Puff</option>
-        <option value="both">Both</option>
-      </select>
-    </label>
-    <button id="reseed" class="btn">Reseed now</button>
-
-                          
+                         
     // Start/Stop: Stop clears; Start reseeds at current source
     document.getElementById('start').onclick = () => {
       particles.length = 0;         // clear old cloud
