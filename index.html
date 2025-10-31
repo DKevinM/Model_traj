@@ -139,9 +139,28 @@
     document.getElementById('gaussPuff').onchange = e => { gaussMode = e.target.checked; };
     document.getElementById('puffRate').oninput = e => { puffRate = +e.target.value; };
     document.getElementById('timeScale').oninput = e => { timeScale = +e.target.value; };
+    let mode = 'cont';
+    document.getElementById('mode').onchange = e => { mode = e.target.value; };
+    document.getElementById('reseed').onclick = () => { particles.length = 0; seedSome(1200); draw(); };
 
+    
+    <label>Mode
+      <select id="mode">
+        <option value="cont" selected>Continuous</option>
+        <option value="puff">Puff</option>
+        <option value="both">Both</option>
+      </select>
+    </label>
+    <button id="reseed" class="btn">Reseed now</button>
+
+                          
     // Start/Stop: Stop clears; Start reseeds at current source
-    document.getElementById('start').onclick = () => { if (!particles.length) seedSome(); running = true; last = performance.now(); };
+    document.getElementById('start').onclick = () => {
+      particles.length = 0;         // clear old cloud
+      seedSome(1200);                // reseed at current sourceCenter
+      running = true;
+      last = performance.now();
+    };
     document.getElementById('stop').onclick  = () => { running = false; particles.length = 0; draw(); };
 
     // ===== Wind helpers =====
@@ -196,16 +215,21 @@
     }
 
     function spawn(dt){
-      spawnAcc += spawnPerSec*dt;
-      let make = Math.floor(spawnAcc);
-      spawnAcc -= make;
-      make = Math.min(make, Math.max(0, maxParticles - particles.length));
-      for (let i=0;i<make;i++){
-        const ll = jitterDiskMeters(sourceCenter, sourceRadiusM);
-        particles.push({ lat: ll.lat, lon: ll.lng, age: 0, trail: [], puff:false });
+      // CONTINUOUS emission
+      if (mode === 'cont' || mode === 'both') {
+        spawnAcc += spawnPerSec*dt;
+        let make = Math.floor(spawnAcc);
+        spawnAcc -= make;
+        make = Math.min(make, Math.max(0, maxParticles - particles.length));
+        for (let i=0;i<make;i++){
+          const ll = jitterDiskMeters(sourceCenter, sourceRadiusM);
+          particles.push({ lat: ll.lat, lon: ll.lng, age: 0, trail: [], puff:false });
+        }
       }
-      if (gaussMode && puffRate>0){
-        const expected = puffRate*dt;
+    
+      // PUFF emission (bursts/sec)
+      if ((mode === 'puff' || mode === 'both') && puffRate > 0){
+        const expected = puffRate*dt;             // Poisson-like trigger
         if (Math.random() < expected){
           const ll0 = jitterDiskMeters(sourceCenter, Math.max(5, 0.2*sourceRadiusM));
           const puffN = Math.min(200, Math.max(20, Math.round(spawnPerSec*0.2)));
@@ -216,6 +240,7 @@
         }
       }
     }
+
 
     // ===== Physics =====
     function step(dtReal){
