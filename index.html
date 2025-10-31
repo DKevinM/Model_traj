@@ -150,14 +150,19 @@
     document.getElementById('timeScale').oninput = e => { timeScale = +e.target.value; };
     let mode = 'cont';
     document.getElementById('mode').onchange = e => { mode = e.target.value; };
-    document.getElementById('reseed').onclick = () => { particles.length = 0; seedSome(1200); draw(); };
+    document.getElementById('reseed').onclick = () => {
+      particles.length = 0;
+      if (mode === 'cont' || mode === 'both') seedSome(1200);
+      draw();
+    };
 
     
                          
     // Start/Stop: Stop clears; Start reseeds at current source
     document.getElementById('start').onclick = () => {
-      particles.length = 0;         // clear old cloud
-      seedSome(1200);                // reseed at current sourceCenter
+      particles.length = 0;
+      // Only pre-seed for continuous/both. For puff-only, let puffs create particles.
+      if (mode === 'cont' || mode === 'both') seedSome(1200);
       running = true;
       last = performance.now();
     };
@@ -323,7 +328,8 @@
     requestAnimationFrame(animate);
 
     // ===== Seed & autostart =====
-    seedSome(1200);
+    // Seed only if not in pure puff mode
+    if (mode === 'cont' || mode === 'both') seedSome(1200);
     updateManualWind();
     draw();
     running = true;
